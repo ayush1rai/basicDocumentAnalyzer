@@ -1,6 +1,6 @@
 import fitz
-import pymupdf
 from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -24,8 +24,16 @@ async def lifespan(app: FastAPI):
     pipeline['embedding_model'] = SentenceTransformer('all-MiniLM-L6-v2')
     llm = Ollama(model="phi3:mini")
     prompt_template = """
-        You are an expert HR assistant tasked with summarizing a candidate's resume. 
-        Based strictly on the context provided, answer the user's question directly and professionally.
+        You are an expert document analysis assistant. Your role is to accurately answer user queries using both retrieved context documents and your general reasoning abilities. Always follow this workflow:
+
+        Review the retrieved documents carefully.
+
+        Use only the information present in the retrieved documents as the primary source of truth.
+
+        If the documents do not contain the answer, say so explicitly instead of guessing.
+
+        Answer only using retrieved documents.  
+        Be concise, accurate, no extra info.
 
         Context: {context}
 
@@ -42,6 +50,15 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Intelligent Document Q&A API",
     lifespan=lifespan
+)
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://localhost:5174", "http://127.0.0.1:5173", "http://127.0.0.1:5174"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 @app.post("/process-document")
@@ -69,7 +86,7 @@ async def process_document(file: UploadFile = File(...)):
     collection_name = re.sub(r'[^a-zA-Z0-9_-]', '_', file.filename)
     collection = chroma_client.get_or_create_collection(name=collection_name)
     
-    collection.add(embeddings=embeddings, documents=chunks, ids=[f"chunk_{i}" for i in range(len(chunks))])
+    collection.add(embeddings=embeddings.tolist(), documents=chunks, ids=[f"chunk_{i}" for i in range(len(chunks))])
     
     return {"status": "success", "message": f"Document '{file.filename}' processed and stored in collection '{collection_name}'."}
 
@@ -89,7 +106,7 @@ def process_query(query: Query):
     
     query_embedding = embedding_model.encode([query.question])
     
-    results = collection.query(query_embeddings=query_embedding, n_results=2)
+    results = collection.query(query_embeddings=query_embedding.tolist(), n_results=2)
     retrieved_documents = [Document(page_content=doc) for doc in results['documents'][0]]
     
     if not retrieved_documents:
